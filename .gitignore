@@ -49,6 +49,8 @@ pyvenv.cfg
 # (see .gitattributes), since it exceeds GitHub's 100 MB file limit. Other
 # footage stays local to keep LFS storage and bandwidth down.
 !backend/data/videos/Vehicle and Surge Detection.mp4
+# The README demo recording (15 MB, plain Git).
+!docs/media/kavach-demo.mp4
 
 # ── Runtime output ───────────────────────────────────────────────────────────
 alert_log_*.txt
