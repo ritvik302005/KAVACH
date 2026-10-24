@@ -26,3 +26,9 @@ torchvision==0.25.0
 
 # ── Live stream ingestion ────────────────────────────────────────────────────
 yt-dlp==2026.3.17
+
+# ── Number plate reading (OCR on the CPU) ────────────────────────────────────
+rapidocr-onnxruntime==1.2.3
+
+# ── Hardware communication ───────────────────────────────────────────────────
+pyserial==3.5

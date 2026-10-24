@@ -44,9 +44,18 @@ def open_capture(live=False):
     return cv2.VideoCapture(config.VIDEO_FILE), False
 
 
-def read_resized(cap):
-    """Read one frame, resized to the working geometry. None if unavailable."""
+def read_both(cap):
+    """Read one frame as (working-size frame, original frame), or (None, None).
+
+    The original is kept for number plate reading, which needs the camera's
+    full resolution.
+    """
     ret, frame = cap.read()
     if not ret or frame is None:
-        return None
-    return cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
+        return None, None
+    return cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT)), frame
+
+
+def read_resized(cap):
+    """Read one frame, resized to the working geometry. None if unavailable."""
+    return read_both(cap)[0]

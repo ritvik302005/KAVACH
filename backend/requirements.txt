@@ -29,3 +29,6 @@ yt-dlp==2026.3.17
 
 # ── Hardware communication ───────────────────────────────────────────────────
 pyserial==3.5
+
+# ── Number plate reading (OCR on the CPU) ────────────────────────────────────
+rapidocr-onnxruntime==1.2.3

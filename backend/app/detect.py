@@ -29,7 +29,7 @@ from app.geometry import (apply_threat, box_touches_line, box_touches_zone, dete
                           detect_zigzag, get_threat_level, is_night, segments_intersect)
 from app.render import (THREAT_COLORS, DashboardPublisher, draw_all_tripwires,
                         draw_all_zones, draw_overlay, draw_source_label)
-from app.source import open_capture, read_resized
+from app.source import open_capture, read_both, read_resized
 from app.tracking import DetectionState
 
 ALLOWED_CLASSES = [0, 2, 3, 5, 7]
@@ -69,7 +69,7 @@ def _publish_hardware_event(event_type, threat, sector=None, person_id=None, veh
         pass  # Never let hardware events crash detection
 
 
-def analyse_frame(frame, results, state, frame_count):
+def analyse_frame(frame, results, state, frame_count, native=None):
     """Update tracking state and record the overlay for one detected frame.
 
     Only ever called on a frame that YOLO actually ran on. Previously the loop
@@ -169,21 +169,12 @@ def analyse_frame(frame, results, state, frame_count):
             name = f"{'person' if is_person else 'vehicle'}#{track_id}"
             watchlisted = False
             if not is_person:
-                record, newly_flagged = state.vehicles.observe(
-                    track_id, cls, frame, box, velocity, frame_count, in_zones)
+                record = state.vehicles.observe(
+                    track_id, cls, frame, box, velocity, frame_count, in_zones, native)
                 profile = record['profile']
-                if profile:
+                if profile and profile.get('plate'):
                     name = profile['plate']
                     watchlisted = profile['level'] == 'alert'
-                if newly_flagged:
-                    state.add_alert(f"WATCHLIST HIT: {profile['plate']} "
-                                    f"({profile['make']}) — {profile['reason']}")
-                    _publish_hardware_event(
-                        "watchlist", "critical",
-                        vehicle_plate=profile['plate'],
-                        make=profile['make'],
-                        reason=profile['reason'],
-                    )
 
             is_suspicious = track_id in state.suspicious_ids
             is_loitering  = track_id in state.loitering_ids
@@ -219,6 +210,15 @@ def analyse_frame(frame, results, state, frame_count):
     state.total_persons = total_persons
     state.total_vehicles = total_vehicles
     state.overlay = overlay
+    # Plates are read on another thread; pick up whatever has finished.
+    for record in state.vehicles.poll():
+        profile = record['profile']
+        state.add_alert(f"WATCHLIST HIT: {profile['plate']} — {profile['reason']}")
+        _publish_hardware_event(
+            "watchlist", "critical",
+            vehicle_plate=profile['plate'],
+            reason=profile['reason'],
+        )
     state.vehicle_log = state.vehicles.summaries(frame_count)
 
     # Surge: each zone against its own past, the site against the site's past.
@@ -268,9 +268,9 @@ class Detector(threading.Thread):
         self._pending = None
         self._stopped = False
 
-    def submit(self, frame, frame_count):
+    def submit(self, frame, frame_count, native=None):
         with self._cond:
-            self._pending = (frame, frame_count)   # latest wins
+            self._pending = (frame, frame_count, native)   # latest wins
             self._cond.notify()
 
     def stop(self):
@@ -285,14 +285,14 @@ class Detector(threading.Thread):
                     self._cond.wait()
                 if self._stopped:
                     return
-                frame, frame_count = self._pending
+                frame, frame_count, native = self._pending
                 self._pending = None
             try:
                 results = self.model.track(frame, verbose=False, conf=0.3,
                                            imgsz=inference_imgsz(),
                                            classes=ALLOWED_CLASSES, persist=True)
                 with self.lock:
-                    analyse_frame(frame, results, self.state, frame_count)
+                    analyse_frame(frame, results, self.state, frame_count, native)
             except Exception as exc:   # one bad frame must not kill detection for the session
                 print(f"Detection error on frame {frame_count}: {type(exc).__name__}: {exc}")
 
@@ -443,7 +443,7 @@ def run(model=None, stop_event=None):
 
             try:
                 while should_run() and cap.isOpened():
-                    frame = read_resized(cap)
+                    frame, native = read_both(cap)
                     if frame is None:
                         if is_live:
                             print("Live stream dropped. Reconnecting...")
@@ -456,7 +456,7 @@ def run(model=None, stop_event=None):
                     with lock:
                         process_commands(state, source)
                     frame_count += 1
-                    detector.submit(frame.copy(), frame_count)
+                    detector.submit(frame.copy(), frame_count, native)
 
                     if frame_count % publish_every == 0:
                         # ponytail: boxes lag moving objects by one inference

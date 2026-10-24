@@ -112,7 +112,7 @@ function Spotlight({ record }) {
       </span>
       <Plate plate={record.plate} large />
       <span style={{ fontSize: '0.7rem', color: INK.primary, lineHeight: 1.5 }}>
-        {record.make} · {record.color ?? '—'} · {record.year}
+        {record.type} · {record.color ?? '—'}
         <span style={{ display: 'block', fontSize: '0.6rem', color: INK.secondary, letterSpacing: '0.08em' }}>
           {record.status} · REG {record.rto} · FIRST SEEN {record.first_seen}
         </span>
@@ -197,7 +197,13 @@ export function VehiclePanel({ vehicles, panelStyle, reduced }) {
           <span style={{ color: INK.muted }}>READING {counts.reading}</span>
           <span style={{ color: counts.flagged ? THREAT.HIGH : INK.muted }}>WATCHLIST {counts.flagged}</span>
           <span
-            title="Registration lookups use a simulated VAHAN feed in this build"
+            title="Plates are read from the video by OCR, from the camera's full-size frame, with several reads voted together"
+            style={{ border: `1px solid ${INK.line}`, padding: '1px 6px', color: INK.secondary }}
+          >
+            PLATE: READ FROM VIDEO
+          </span>
+          <span
+            title="The registration status is generated. No VAHAN lookup is connected in this build"
             style={{ border: `1px solid ${INK.line}`, padding: '1px 6px', color: INK.muted }}
           >
             VAHAN: SIMULATED
@@ -279,15 +285,18 @@ export function VehiclePanel({ vehicles, panelStyle, reduced }) {
                   <td style={td}>
                     <Plate plate={v.plate} />
                     {v.confidence && (
-                      <span style={{ marginLeft: 6, fontSize: '0.56rem', color: INK.muted }}>
+                      <span
+                        title={`Plate read confidence, from ${v.plate_reads ?? 0} read${v.plate_reads === 1 ? '' : 's'}`}
+                        style={{ marginLeft: 6, fontSize: '0.56rem', color: INK.muted }}
+                      >
                         {Math.round(v.confidence * 100)}%
                       </span>
                     )}
                   </td>
                   <td style={td}>
-                    <span style={{ display: 'block', color: INK.primary }}>{v.make ?? '—'}</span>
+                    <span style={{ display: 'block', color: INK.primary }}>{v.type}</span>
                     <span style={{ display: 'block', fontSize: '0.56rem', letterSpacing: '0.12em', color: INK.muted }}>
-                      {v.type}{v.year ? ` · ${v.year}` : ''}{v.rto ? ` · ${v.rto}` : ''}
+                      {v.rto ? `REG ${v.rto}` : '—'}
                     </span>
                   </td>
                   <td style={{ ...td, whiteSpace: 'nowrap' }}>

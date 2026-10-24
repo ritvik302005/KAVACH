@@ -56,6 +56,17 @@ An operator draws **restricted zones** and **tripwires** directly on the live vi
 | 🌙 | **Night Mode** | Auto-engaged when mean frame luminance drops below threshold |
 | 🔺 | **Threat Escalation** | Composite `LOW → MEDIUM → HIGH` scoring, alert fired on every transition |
 
+### 🚗 Vehicle Intelligence (number plates)
+
+| | Part | Status |
+|:--|:--|:--|
+| ✅ | **Plate reading** | Read from the video with OCR ([RapidOCR](https://github.com/RapidAI/RapidOCR), CPU) on its own thread, from the camera's **original-resolution** frame (the 1280×720 working frame is too small). Only the lower part of vehicles wider than `PLATE_MIN_BOX_WIDTH` is read; several reads are combined character by character, and look-alike characters (B/8, O/0…) are repaired using the Indian plate format. A plate is shown once two reads agree. |
+| ✅ | **Colour, speed, heading, type** | Measured from the video |
+| ✅ | **Watchlist alert** | Real matching of the read plate against `backend/data/watchlist.json` (one wrong character tolerated). The list shipped there is a **demo list**: replace it with a real one |
+| ⚠️ | **Registration status** | **Simulated.** No VAHAN lookup is connected; the status is generated from the plate text and labelled `VAHAN: SIMULATED` in the console |
+
+Limits: vehicles that are far away or small (most two-wheelers in the sample clip) are not read; on the 60-second sample clip, 109 vehicles were tracked and 5 had a plate confirmed; checked by eye, 3 were exactly right and 2 had one letter wrong (OCR confuses look-alike letters such as M/K). Reading was tuned on this one clip and has not been measured on real border footage. While plates are being read, end-to-end detection speed drops from about 9.5 to about 6.7 analysed frames/s on a CPU (small YOLOv8 model); `KAVACH_OCR_THREADS` (default 2) caps the OCR's share. Plate reading needs `rapidocr-onnxruntime` (in `requirements.txt`); without it the console runs and no plates are read.
+
 ### 🖥️ Operator Console
 
 - 🎨 **Draw-on-video setup** — click to place zone vertices and tripwire endpoints, no config files

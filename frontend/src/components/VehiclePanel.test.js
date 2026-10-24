@@ -7,9 +7,9 @@ const base = {
 };
 
 const vehicles = [
-  { ...base, id: 3, plate: 'DL 03 CA 4471', make: 'Honda City', status: 'REPORTED STOLEN', level: 'alert' },
-  { ...base, id: 2, plate: 'UP 14 JM 7715', make: 'Tata Nexon', status: 'REGISTERED', level: 'ok', in_view: false },
-  { ...base, id: 1, plate: null, make: null, status: null, level: null },
+  { ...base, id: 3, plate: 'DL 03 CA 4471', status: 'WATCHLIST MATCH (DEMO)', level: 'alert' },
+  { ...base, id: 2, plate: 'UP 14 JM 7715', status: 'REGISTERED', level: 'ok', in_view: false },
+  { ...base, id: 1, plate: null, status: null, level: null },
 ];
 
 test('lists vehicles, spotlights a watchlist match, and filters', () => {
@@ -32,4 +32,10 @@ test('lists vehicles, spotlights a watchlist match, and filters', () => {
 test('empty state before any vehicle is detected', () => {
   render(<VehiclePanel vehicles={[]} panelStyle={{}} reduced />);
   expect(screen.getByText('NO VEHICLES DETECTED YET')).toBeInTheDocument();
+});
+
+test('says the plate is read from the video and the registry is simulated', () => {
+  render(<VehiclePanel vehicles={vehicles} panelStyle={{}} reduced />);
+  expect(screen.getByText('PLATE: READ FROM VIDEO')).toBeInTheDocument();
+  expect(screen.getByText('VAHAN: SIMULATED')).toBeInTheDocument();
 });

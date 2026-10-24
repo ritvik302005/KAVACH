@@ -159,11 +159,17 @@ TRACK_EVICT_EVERY_FRAMES = 120
 
 MAX_ALERTS = 200            # alert_log ring size; the console renders up to this
 
-# ── Vehicle intelligence (demo: plate/registration data is simulated) ────────
-PLATE_READ_DETECTIONS  = 4    # detections of a vehicle before its plate "reads"
-DEMO_WATCHLIST_AT      = 4    # plates read before the first watchlist hit
-DEMO_WATCHLIST_GAP_SECONDS = 75   # minimum time between watchlist hits
-WATCHLIST_MIN_BOX_H    = 110  # px; hits only land on clearly visible vehicles
+# ── Vehicle intelligence (plates are read from the video; registration status is simulated)
+PLATE_MIN_BOX_WIDTH     = 150   # px in the working frame; narrower vehicles are too far to read
+PLATE_READ_EVERY_FRAMES = 6     # video frames between reads of the same vehicle
+PLATE_MAX_ATTEMPTS      = 10    # OCR attempts per vehicle
+PLATE_MAX_READS         = 6     # successful reads after which a vehicle's plate is final
+PLATE_MIN_AGREEMENT     = 0.95  # two reads must agree this much (identical, in practice) to show a plate
+PLATE_CROP_TOP          = 0.45  # the plate is searched in the lower part of the vehicle box
+PLATE_OCR_THREADS       = int(os.environ.get("KAVACH_OCR_THREADS", "2"))  # CPU threads for OCR; more starves the detector
+COLOR_SAMPLE_SIGHTINGS  = 8     # detections used to vote a vehicle's colour
+WATCHLIST_FILE          = os.path.join(BACKEND_DIR, "data", "watchlist.json")
+WATCHLIST_MAX_MISREAD   = 1     # characters the OCR may get wrong and still match
 VEHICLE_REASSOC_FRAMES = 60   # a vehicle lost this recently can be re-claimed
 VEHICLE_LOG_MAX        = 150  # vehicles kept in the console's log
 VEHICLE_IN_VIEW_FRAMES = 20   # unseen longer than this = left the frame

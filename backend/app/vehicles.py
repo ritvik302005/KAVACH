@@ -1,58 +1,46 @@
-"""Vehicle registry for the demo console: ANPR and registration data is SIMULATED.
+"""Vehicle registry for the demo console.
 
-Detection, tracking, vehicle class, colour and speed are measured from the
-video. The number plate, make/model, registration details and watchlist status
-are generated — there is no plate reader or VAHAN lookup behind them. Each
-vehicle's profile is seeded from its track id, so it stays stable while the
-vehicle is in view.
+Measured from the video: detection, tracking, vehicle class, colour, speed,
+heading, and the number plate (read by OCR from the original-resolution frame,
+several reads voted together, see plates.py).
+
+Simulated: the registration status (registered / insurance expired / PUC
+expired). There is no VAHAN lookup behind it; it is generated from the plate
+text so a vehicle keeps the same status. The RTO code comes from the plate
+itself. The watchlist is real matching against a demo list in
+data/watchlist.json (config.WATCHLIST_FILE).
 """
 
+import json
 import random
 import time
-from collections import Counter, OrderedDict
+import zlib
+from collections import Counter, OrderedDict, deque
 
 import cv2
 import numpy as np
 
 from app import config
+from app.plates import format_plate, get_reader, vote_plate
 
 CLASS_TYPES = {2: 'CAR', 3: 'TWO-WHEELER', 5: 'BUS', 7: 'TRUCK'}
 
-MODELS = {
-    'CAR': ['Maruti Suzuki Swift', 'Maruti Suzuki WagonR', 'Maruti Suzuki Dzire',
-            'Maruti Suzuki Baleno', 'Hyundai i20', 'Hyundai Creta', 'Tata Nexon',
-            'Tata Punch', 'Mahindra Scorpio-N', 'Honda City', 'Toyota Innova Crysta',
-            'Kia Seltos', 'Maruti Suzuki Ertiga', 'Hyundai Venue'],
-    'TWO-WHEELER': ['Hero Splendor Plus', 'Honda Activa 6G', 'Bajaj Pulsar 150',
-                    'TVS Jupiter', 'Royal Enfield Classic 350', 'Honda Shine',
-                    'TVS Apache RTR 160', 'Suzuki Access 125', 'Hero HF Deluxe'],
-    'BUS': ['Tata Starbus', 'Ashok Leyland Viking', 'Eicher Skyline Pro'],
-    'TRUCK': ['Tata 407', 'Ashok Leyland Dost', 'Mahindra Bolero Pik-Up',
-              'Eicher Pro 2049', 'Tata Ace Gold'],
+# Registering offices we can name; any other plate shows just its state-RTO code.
+RTO_OFFICES = {
+    ('DL', 1): 'Delhi North', ('DL', 3): 'Delhi Sheikh Sarai', ('DL', 4): 'Delhi Janakpuri',
+    ('DL', 7): 'Delhi Mayur Vihar', ('DL', 8): 'Delhi Wazirpur', ('DL', 12): 'Delhi Vasant Vihar',
+    ('UP', 14): 'Ghaziabad', ('UP', 16): 'Gautam Buddh Nagar', ('UP', 32): 'Lucknow',
+    ('HR', 26): 'Gurugram', ('HR', 51): 'Faridabad', ('HR', 55): 'Gurugram (Comm.)',
+    ('RJ', 14): 'Jaipur', ('PB', 10): 'Ludhiana',
 }
 
-# (state code, RTO number, registering office), weighted toward the NCR.
-RTOS = [
-    ('DL', 1, 'Delhi North'), ('DL', 3, 'Delhi Sheikh Sarai'), ('DL', 4, 'Delhi Janakpuri'),
-    ('DL', 7, 'Delhi Mayur Vihar'), ('DL', 8, 'Delhi Wazirpur'), ('DL', 12, 'Delhi Vasant Vihar'),
-    ('UP', 14, 'Ghaziabad'), ('UP', 16, 'Gautam Buddh Nagar'), ('UP', 32, 'Lucknow'),
-    ('HR', 26, 'Gurugram'), ('HR', 51, 'Faridabad'), ('HR', 55, 'Gurugram (Comm.)'),
-    ('RJ', 14, 'Jaipur'), ('PB', 10, 'Ludhiana'),
-]
-PLATE_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ'   # I, O and Q are not issued
-
-# (status, level, alert text or None, weight). Watchlist hits are scheduled
-# rather than drawn at random: with dense traffic, even a small random rate
-# fires several times a minute and reads as fake.
+# (status, level, weight): simulated registration status.
 STATUSES = [
-    ('REGISTERED', 'ok', None, 84),
-    ('INSURANCE EXPIRED', 'warn', None, 9),
-    ('PUC EXPIRED', 'warn', None, 7),
+    ('REGISTERED', 'ok', 84),
+    ('INSURANCE EXPIRED', 'warn', 9),
+    ('PUC EXPIRED', 'warn', 7),
 ]
-WATCHLIST = [
-    ('REPORTED STOLEN', 'alert', 'reported stolen', 0),
-    ('WANTED — CASE LINKED', 'alert', 'linked to an open case', 0),
-]
+WATCHLIST_STATUS = 'WATCHLIST MATCH (DEMO)'
 
 # Real-world height used to turn pixel speed into ground speed.
 TYPE_HEIGHT_M = {'CAR': 1.5, 'TWO-WHEELER': 1.6, 'BUS': 3.2, 'TRUCK': 2.8}
@@ -98,21 +86,56 @@ def heading(vx, vy):
     return 'APPROACHING' if vy > 0 else 'RECEDING'
 
 
+def _hamming(a, b):
+    return sum(x != y for x, y in zip(a, b))
+
+
+class Watchlist:
+    """Plates to flag, loaded from a JSON file. Matching tolerates a small OCR
+    misread: same length and at most `max_misread` characters different."""
+
+    def __init__(self, entries=(), max_misread=0):
+        self.entries = [(e['plate'].replace(' ', '').upper(), e.get('reason') or 'on the watchlist')
+                        for e in entries]
+        self.max_misread = max_misread
+
+    @classmethod
+    def load(cls, path, max_misread=0):
+        try:
+            with open(path, encoding='utf-8') as f:
+                return cls(json.load(f).get('entries', []), max_misread)
+        except FileNotFoundError:
+            return cls(max_misread=max_misread)
+        except (OSError, ValueError, AttributeError, KeyError) as exc:
+            print(f"Watchlist not loaded from {path}: {type(exc).__name__}: {exc}")
+            return cls(max_misread=max_misread)
+
+    def match(self, plate):
+        """Reason string if `plate` is on the list, else None."""
+        for listed, reason in self.entries:
+            if len(listed) == len(plate) and _hamming(listed, plate) <= self.max_misread:
+                return reason
+        return None
+
+
 class VehicleRegistry:
-    def __init__(self):
+    def __init__(self, reader=None, watchlist=None):
         self.records = OrderedDict()   # record id -> record, oldest first
         self.alias = {}                # tracker id -> record id it was re-associated to
         self.fps = 30.0
-        self.registered = 0
-        self.hits = 0
-        self.last_hit = None           # time.monotonic() of the last watchlist hit
+        # `reader` needs .available and .submit(crop, callback); None = the shared reader.
+        self.reader = reader if reader is not None else get_reader()
+        self.watchlist = watchlist if watchlist is not None else Watchlist.load(
+            config.WATCHLIST_FILE, config.WATCHLIST_MAX_MISREAD)
+        self._inbox = deque()          # (record id, plate, confidence) from the OCR thread
+        self._flagged = []             # records newly matched to the watchlist
 
     def _reassociate(self, vtype, box, frame_count):
         """A record recently lost at this spot, or None.
 
         In dense traffic the tracker drops a vehicle behind another and returns
-        it under a new id. Without this the same car would be re-read with a
-        different plate — the one thing an ANPR demo cannot survive.
+        it under a new id. Without this the same car would be read again from
+        scratch and could show up twice in the log.
         """
         x1, y1, x2, y2 = box
         cx, cy, size = (x1 + x2) / 2, (y1 + y2) / 2, max(x2 - x1, y2 - y1)
@@ -127,43 +150,109 @@ class VehicleRegistry:
                 best, best_d = rec, d
         return best
 
-    def _watchlist_due(self, vtype, box_h):
-        # Only on a vehicle big enough that its red box reads from the back of
-        # the room, and spaced out in time so it never looks scripted.
-        if vtype == 'TWO-WHEELER' or box_h < config.WATCHLIST_MIN_BOX_H:
-            return False
-        if self.registered < config.DEMO_WATCHLIST_AT:
-            return False
-        return (self.last_hit is None or
-                time.monotonic() - self.last_hit >= config.DEMO_WATCHLIST_GAP_SECONDS)
+    # ── Plate reading ────────────────────────────────────────────────────────
+    def _deliver(self, rec_id, plate, confidence):
+        """Called on the OCR thread; the main thread picks it up in poll()."""
+        self._inbox.append((rec_id, plate, confidence))
 
-    def _profile(self, track_id, vtype, box_h):
-        rng = random.Random(track_id * 7919 + 17)
-        state, rto, office = rng.choice(RTOS)
-        series = ''.join(rng.choice(PLATE_LETTERS) for _ in range(rng.choice((1, 2, 2))))
-        plate = f"{state} {rto:02d} {series} {rng.randint(1, 9999):04d}"
+    def _maybe_read_plate(self, rec, frame, native, box, frame_count):
+        if (self.reader is None or not self.reader.available or native is None
+                or rec['inflight'] or rec['plate_done']
+                or rec['attempts'] >= config.PLATE_MAX_ATTEMPTS
+                or frame_count - rec['last_submit'] < config.PLATE_READ_EVERY_FRAMES):
+            return
+        x1, y1, x2, y2 = box
+        if x2 - x1 < config.PLATE_MIN_BOX_WIDTH:
+            return
+        # The plate is read from the original frame: at the 1280x720 working
+        # size the characters are too small and OCR garbles them.
+        k = native.shape[1] / frame.shape[1]
+        top = y1 + config.PLATE_CROP_TOP * (y2 - y1)
+        crop = native[max(0, int(top * k)):int(y2 * k), max(0, int(x1 * k)):int(x2 * k)]
+        if crop.size == 0:
+            return
+        rec['inflight'] = True
+        rec['attempts'] += 1
+        rec['last_submit'] = frame_count
+        rec_id = rec['id']
+        self.reader.submit(crop.copy(), lambda plate, conf: self._deliver(rec_id, plate, conf))
 
-        self.registered += 1
-        if self._watchlist_due(vtype, box_h):
-            status = WATCHLIST[self.hits % len(WATCHLIST)]
-            self.hits += 1
-            self.last_hit = time.monotonic()
-        else:
-            status = rng.choices(STATUSES, weights=[s[3] for s in STATUSES])[0]
+    def poll(self):
+        """Apply finished plate reads. Returns vehicles newly matched to the
+        watchlist since the last call."""
+        while self._inbox:
+            rec_id, plate, confidence = self._inbox.popleft()
+            rec = self.records.get(rec_id)
+            if rec is None:
+                continue
+            rec['inflight'] = False
+            if plate:
+                rec['reads'].append((plate, confidence))
+                self._update_plate(rec)
+        flagged, self._flagged = self._flagged, []
+        return flagged
 
+    def _update_plate(self, rec):
+        plate, confidence, agreement = vote_plate(rec['reads'])
+        n = len(rec['reads'])
+        created = rec['profile'] is None
+        if created:
+            # One read can be wrong; wait for a second that agrees (or a third).
+            if n < 3 and not (n >= 2 and agreement >= config.PLATE_MIN_AGREEMENT):
+                return
+            rec['profile'] = self._profile(plate)
+        profile = rec['profile']
+        changed = created or profile['plate_raw'] != plate
+        profile['plate'], profile['plate_raw'] = format_plate(plate), plate
+        profile['confidence'] = confidence
+        if changed:
+            self._merge_same_plate(rec, plate)
+        reason = self.watchlist.match(plate)
+        if reason and not rec['alerted']:
+            profile.update(status=WATCHLIST_STATUS, level='alert', reason=reason)
+            rec['alerted'] = True
+            self._flagged.append(rec)
+        if n >= config.PLATE_MAX_READS:
+            rec['plate_done'] = True
+
+    def _merge_same_plate(self, rec, plate):
+        """The tracker can lose a vehicle for good (it stops behind traffic, then
+        returns under a new id too late to be re-associated). Once the plate
+        shows it is the same vehicle, keep one row and do not alert twice."""
+        for other_id, other in list(self.records.items()):
+            if other is rec or not other['profile'] or other['profile'].get('plate_raw') != plate:
+                continue
+            rec['first_seen'] = other['first_seen']
+            rec['alerted'] = rec['alerted'] or other['alerted']
+            if other['alerted']:
+                rec['profile'].update(status=other['profile']['status'],
+                                      level=other['profile']['level'],
+                                      reason=other['profile']['reason'])
+            del self.records[other_id]
+            for tracker_id, target in self.alias.items():
+                if target == other_id:
+                    self.alias[tracker_id] = rec['id']
+            self.alias[other_id] = rec['id']
+
+    def _profile(self, plate):
+        """Simulated registration details, stable for a given plate."""
+        rng = random.Random(zlib.crc32(plate.encode()))
+        state, number = plate[:2], int(plate[2:4])
+        office = RTO_OFFICES.get((state, number))
+        status = rng.choices(STATUSES, weights=[s[2] for s in STATUSES])[0]
         return {
-            'plate': plate,
-            'confidence': round(rng.uniform(0.86, 0.99), 2),
-            'make': rng.choice(MODELS[vtype]),
-            'year': rng.randint(2012, 2025),
-            'rto': f"{state}-{rto:02d} {office}",
+            'rto': f"{state}-{number:02d}" + (f" {office}" if office else ''),
             'status': status[0],
             'level': status[1],
-            'reason': status[2],
+            'reason': None,
         }
 
-    def observe(self, track_id, cls, frame, box, velocity, frame_count, zones):
-        """Update one vehicle from a detection. Returns (record, newly_flagged)."""
+    def observe(self, track_id, cls, frame, box, velocity, frame_count, zones, native=None):
+        """Update one vehicle from a detection and queue a plate read if due.
+
+        `frame` is the working-size frame the box is in; `native` is the same
+        frame at the camera's own resolution, used for reading the plate.
+        """
         seen_type = CLASS_TYPES.get(cls, 'CAR')
         rec = self.records.get(self.alias.get(track_id, track_id))
         vtype = rec['type'] if rec is not None else seen_type
@@ -177,6 +266,8 @@ class VehicleRegistry:
                     'colors': Counter(),
                     'color': None, 'speed': 0.0, 'first_seen': time.strftime('%H:%M:%S'),
                     'profile': None, 'alerted': False,
+                    'reads': [], 'attempts': 0, 'inflight': False,
+                    'last_submit': -config.PLATE_READ_EVERY_FRAMES, 'plate_done': False,
                 }
                 self.records[track_id] = rec
                 while len(self.records) > config.VEHICLE_LOG_MAX:
@@ -195,7 +286,7 @@ class VehicleRegistry:
         rec['zones'] = zones
 
         x1, y1, x2, y2 = box
-        if rec['sightings'] <= config.PLATE_READ_DETECTIONS + 4:
+        if rec['sightings'] <= config.COLOR_SAMPLE_SIGHTINGS:
             w, h = x2 - x1, y2 - y1
             crop = frame[max(0, y1 + h // 4):max(0, y2 - h // 3),
                          max(0, x1 + w // 5):max(0, x2 - w // 5)]
@@ -211,12 +302,8 @@ class VehicleRegistry:
         rec['speed'] = rec['speed'] * 0.7 + min(kmh, 140.0) * 0.3
         rec['heading'] = heading(vx, vy)
 
-        newly_flagged = False
-        if rec['profile'] is None and rec['sightings'] >= config.PLATE_READ_DETECTIONS:
-            rec['profile'] = self._profile(rec['id'], vtype, box_h)
-            if rec['profile']['level'] == 'alert' and not rec['alerted']:
-                rec['alerted'] = newly_flagged = True
-        return rec, newly_flagged
+        self._maybe_read_plate(rec, frame, native, box, frame_count)
+        return rec
 
     def summaries(self, frame_count):
         """Newest first, for the console's vehicle panel."""
@@ -229,8 +316,7 @@ class VehicleRegistry:
                 'type': rec['type'],
                 'plate': p.get('plate'),
                 'confidence': p.get('confidence'),
-                'make': p.get('make'),
-                'year': p.get('year'),
+                'plate_reads': len(rec['reads']),
                 'rto': p.get('rto'),
                 'status': p.get('status'),
                 'level': p.get('level'),

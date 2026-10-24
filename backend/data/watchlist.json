@@ -1,0 +1,6 @@
+{
+  "note": "DEMO watchlist. Replace with a real list from the authority that owns it. A plate read from the video that matches an entry (up to config.WATCHLIST_MAX_MISREAD characters off) raises a watchlist alert.",
+  "entries": [
+    {"plate": "UP23BT4920", "reason": "on the demo watchlist"}
+  ]
+}
