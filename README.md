@@ -23,6 +23,18 @@
 
 ---
 
+## 🎬 Demo
+
+![Kavach tracking people and vehicles inside a restricted zone with a tripwire](docs/media/kavach-demo.gif)
+
+**[Full 85-second walkthrough (MP4)](docs/media/kavach-demo.mp4):** drawing a zone and a tripwire on the live feed, YOLOv8n detection and tracking, wire-crossing and loitering alerts, the zone's threat level rising from LOW to MEDIUM, and a number plate read from the video (`UP 23 BT 4920`) matching the demo watchlist.
+
+Recorded on a laptop CPU with YOLOv8n and the bundled sample clip. The watchlist entry is a demo, and registration status is simulated.
+
+**Operator console:** https://kavach-surveillance.vercel.app (landing page and console UI). The detection backend is not hosted: it needs about 650 MB of RAM, more than free hosting tiers allow, so live detection runs locally (see [Getting Started](#-getting-started)).
+
+---
+
 ## 📖 Overview
 
 **Kavach** (Sanskrit: *armour*) is a border and perimeter surveillance platform that turns any video feed — a file, an RTSP camera, or a YouTube live stream — into an actively monitored security sector.
